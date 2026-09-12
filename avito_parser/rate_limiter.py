@@ -19,6 +19,7 @@ class RateLimitProfile(str, Enum):
     BALANCED = "balanced"
     FAST_ROTATING = "fast_rotating"
     DATACENTER = "datacenter"
+    MOBILE_SINGLE = "mobile_single"
 
 
 @dataclass
@@ -63,6 +64,14 @@ PROFILES: Dict[RateLimitProfile, ProfileConfig] = {
         backoff_factor=2.2,
         max_backoff=90.0,
         description="Conservative profile for datacenter proxy subnets that face strict Avito scrutiny."
+    ),
+    RateLimitProfile.MOBILE_SINGLE: ProfileConfig(
+        min_delay=35.0,
+        max_delay=60.0,
+        jitter=5.0,
+        backoff_factor=2.0,
+        max_backoff=300.0,
+        description="Ultra-conservative profile for direct unproxied requests from a single mobile IP."
     ),
 }
 

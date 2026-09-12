@@ -110,9 +110,14 @@ def cmd_batch(args):
 
 def cmd_search(args):
     setup_logging(args.verbose)
+    profile = args.profile or "stealth"
+
+    if args.max_pages and args.max_pages > 1 and not args.proxy:
+        print("[!] ВНИМАНИЕ: Для парсинга нескольких страниц подряд без банов нужны резидентские прокси, иначе бан на 2-й странице (QRATOR блокирует частые запросы каталога с одного IP).")
+
     parser = AvitoParser(
         proxies=args.proxy,
-        profile=args.profile,
+        profile=profile,
         min_delay=args.min_delay,
         max_delay=args.max_delay,
         cookies=load_cookies(args),
@@ -195,7 +200,7 @@ def main():
     p_item = subparsers.add_parser("item", help="Parse one or more item URLs")
     p_item.add_argument("urls", nargs="+", help="Avito item URL(s)")
     p_item.add_argument("--proxy", help="Proxy URL (socks5h://... or http://...)")
-    p_item.add_argument("--profile", choices=["stealth", "balanced", "fast_rotating", "datacenter"], default=None, help="Rate limit profile")
+    p_item.add_argument("--profile", choices=["stealth", "balanced", "fast_rotating", "datacenter", "mobile_single"], default=None, help="Rate limit profile")
     p_item.add_argument("--cookies", help="Raw Cookie header string (e.g. 'u=...; v=...')")
     p_item.add_argument("--cookies-file", help="Path to text file containing Cookie string")
     p_item.add_argument("--json", help="Export to JSON file")
@@ -211,7 +216,7 @@ def main():
     p_batch.add_argument("file", help="Path to text file containing item URLs")
     p_batch.add_argument("--proxy-file", help="Path to text file with proxy list")
     p_batch.add_argument("--proxy", help="Single proxy URL")
-    p_batch.add_argument("--profile", choices=["stealth", "balanced", "fast_rotating", "datacenter"], default=None, help="Rate limit profile")
+    p_batch.add_argument("--profile", choices=["stealth", "balanced", "fast_rotating", "datacenter", "mobile_single"], default=None, help="Rate limit profile")
     p_batch.add_argument("--cookies", help="Raw Cookie header string")
     p_batch.add_argument("--cookies-file", help="Path to text file containing Cookie string")
     p_batch.add_argument("--json", help="Export to JSON file")
@@ -238,7 +243,7 @@ def main():
     p_search.add_argument("--json", help="Export search results to JSON")
     p_search.add_argument("--csv", help="Export search results to CSV")
     p_search.add_argument("--proxy", help="Proxy URL")
-    p_search.add_argument("--profile", choices=["stealth", "balanced", "fast_rotating", "datacenter"], default=None, help="Rate limit profile")
+    p_search.add_argument("--profile", choices=["stealth", "balanced", "fast_rotating", "datacenter", "mobile_single"], default="stealth", help="Rate limit profile (default: stealth)")
     p_search.add_argument("--min-delay", type=float, default=None)
     p_search.add_argument("--max-delay", type=float, default=None)
     p_search.add_argument("-v", "--verbose", action="store_true")

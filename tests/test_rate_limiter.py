@@ -43,6 +43,11 @@ def test_rate_limit_profiles():
     assert dc.min_delay == 4.5
     assert dc.max_delay == 8.5
 
+    ms = get_profile_config("mobile_single")
+    assert ms.min_delay == 35.0
+    assert ms.max_delay == 60.0
+    assert ms.max_backoff == 300.0
+
     with pytest.raises(ValueError):
         get_profile_config("unknown_profile")
 

@@ -2,6 +2,7 @@
 High-accuracy HTML & JSON parser for Avito item pages and search listings.
 Supports React Hydration state, Schema.org (JSON-LD), and OpenGraph fallbacks.
 """
+import html as html_lib
 import json
 import logging
 import re
@@ -20,14 +21,8 @@ def clean_html(text: Optional[str]) -> str:
     text = re.sub(r'<br\s*/?>', '\n', text)
     text = re.sub(r'</p>', '\n', text)
     text = re.sub(r'<[^>]+>', '', text)
-    text = (
-        text.replace('&nbsp;', ' ')
-        .replace('&#39;', "'")
-        .replace('&quot;', '"')
-        .replace('&amp;', '&')
-        .replace('&lt;', '<')
-        .replace('&gt;', '>')
-    )
+    text = html_lib.unescape(text)
+    text = text.replace('\xa0', ' ')
     # Collapse 3+ newlines to 2
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
@@ -320,4 +315,123 @@ class AvitoCatalogParser:
                 except Exception:
                     pass
 
+        # 3. Mobile Web (m.avito.ru) HTML fallback
+        if not items:
+            mobile_items, mobile_total = cls._parse_m_mobile(html, url=url)
+            if mobile_items:
+                items = mobile_items
+                if total_count is None:
+                    total_count = mobile_total
+
         return SearchResult(url=url, total_count=total_count, page=page, items=items)
+
+    @classmethod
+    def _parse_m_mobile(cls, html: str, url: str = "") -> Tuple[List[SearchResultItem], Optional[int]]:
+        """
+        Parses m.avito.ru catalog listing rendered without __staticRouterHydrationData items.
+        """
+        items: List[SearchResultItem] = []
+        total_count = None
+
+        count_match = re.search(r'page-title-count[^>]*>([0-9\s]+)', html) or re.search(r'(\d[\d\s]*)\s+объявлен', html)
+        if count_match:
+            try:
+                total_count = int(re.sub(r'\D', '', count_match.group(1)))
+            except ValueError:
+                pass
+
+        blocks = re.split(r'data-marker=["\']item["\']', html)[1:]
+        for b in blocks:
+            link_match = (
+                re.search(r'item/link[^>]*href="([^"]+)"', b)
+                or re.search(r'data-marker="item-title"[^>]*href="([^"]+)"', b)
+                or re.search(r'href="(/[^"]+)"', b)
+            )
+            raw_link = link_match.group(1).strip() if link_match else ""
+            item_url = re.sub(r'\?context=[^&]*(&|$)', '?', raw_link)
+            item_url = item_url.split("?context")[0]
+            if item_url.endswith("?") or item_url.endswith("&"):
+                item_url = item_url[:-1]
+
+            if item_url.startswith("https://m.avito.ru"):
+                item_url = "https://www.avito.ru" + item_url[len("https://m.avito.ru"):]
+            elif item_url.startswith("http://m.avito.ru"):
+                item_url = "https://www.avito.ru" + item_url[len("http://m.avito.ru"):]
+            elif item_url.startswith("/"):
+                item_url = f"https://www.avito.ru{item_url}"
+            elif item_url and not item_url.startswith("http"):
+                item_url = urljoin("https://www.avito.ru", item_url)
+
+            # Item ID
+            id_match = re.search(r'_(\d+)(?:\?|$)', item_url) or re.search(r'data-item-id="(\d+)"', b)
+            item_id = id_match.group(1) if id_match else ""
+
+            # Title
+            title_match = re.search(r'titleLabelGrid[^>]*>([^<]+)', b) or re.search(r'data-marker="item-title"[^>]*>([^<]+)', b)
+            title = clean_html(title_match.group(1)) if title_match else ""
+
+            # Price
+            price_match = re.search(r'priceLabelGrid[^>]*>([^<]+)', b) or re.search(r'data-marker="item-price"[^>]*>([^<]+)', b)
+            price_val = None
+            fmt_price = "Цена не указана"
+            if price_match:
+                raw_p = clean_html(price_match.group(1))
+                digits = re.sub(r'\D', '', raw_p)
+                if digits:
+                    price_val = int(digits)
+                    fmt_price = f"{price_val:,} ₽".replace(",", " ")
+                elif raw_p:
+                    fmt_price = raw_p
+
+            # Seller, Geo, Time
+            geo_left = re.search(r'geoReferenceLeftLabel[^>]*>([^<]+)', b)
+            geo_right = re.search(r'geoReferenceRightLabel[^>]*>([^<]+)', b)
+            geo_parts = []
+            if geo_left:
+                geo_parts.append(clean_html(geo_left.group(1)))
+            if geo_right:
+                geo_parts.append(clean_html(geo_right.group(1)))
+            location = ", ".join(geo_parts)
+
+            time_m = re.search(r'sortTimeGrid[^>]*>([^<]+)', b)
+            item_time = clean_html(time_m.group(1)) if time_m else ""
+
+            if title or item_url:
+                items.append(SearchResultItem(
+                    id=item_id,
+                    title=title,
+                    price=price_val,
+                    formatted_price=fmt_price,
+                    url=item_url,
+                    location=location,
+                    time=item_time,
+                ))
+
+        # Fallback list zip if blocks split failed
+        if not items:
+            titles = re.findall(r'titleLabelGrid[^>]*>([^<]+)', html)
+            prices = re.findall(r'priceLabelGrid[^>]*>([^<]+)', html)
+            links = re.findall(r'item/link[^>]*href="([^"]+)"', html)
+            for i, (t, p, l) in enumerate(zip(titles, prices, links)):
+                raw_l = l.split("?context")[0]
+                if raw_l.startswith("https://m.avito.ru"):
+                    item_url = "https://www.avito.ru" + raw_l[len("https://m.avito.ru"):]
+                elif raw_l.startswith("/"):
+                    item_url = f"https://www.avito.ru{raw_l}"
+                else:
+                    item_url = raw_l
+                id_m = re.search(r'_(\d+)(?:\?|$)', item_url)
+                item_id = id_m.group(1) if id_m else str(i)
+                digits = re.sub(r'\D', '', p)
+                price_val = int(digits) if digits else None
+                fmt_price = f"{price_val:,} ₽".replace(",", " ") if price_val is not None else p.strip()
+                items.append(SearchResultItem(
+                    id=item_id,
+                    title=clean_html(t),
+                    price=price_val,
+                    formatted_price=fmt_price,
+                    url=item_url,
+                    location="",
+                ))
+
+        return items, total_count

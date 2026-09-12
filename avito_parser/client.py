@@ -18,6 +18,7 @@ from .rate_limiter import RateLimiter, RateLimitProfile, get_profile_config
 logger = logging.getLogger(__name__)
 
 DEFAULT_USER_AGENTS = [
+    "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -63,7 +64,7 @@ class AvitoParser:
         if max_delay is not None:
             self.rate_limiter.max_delay = max(self.rate_limiter.min_delay, max_delay)
 
-        self.user_agent = user_agent or random.choice(DEFAULT_USER_AGENTS)
+        self.user_agent = user_agent or DEFAULT_USER_AGENTS[0]
 
         # PoW Token TTL Tracking
         self.pow_solved_at: Optional[float] = None
@@ -198,13 +199,25 @@ class AvitoParser:
                         logger.warning("Failed to solve PoW challenge for %s", url)
 
                 # Check for rate limit / IP block
-                if resp.status_code == 429 or "Доступ ограничен: проблема с IP" in resp.text:
+                is_banned = (
+                    resp.status_code in (403, 429)
+                    or "Доступ ограничен" in resp.text
+                )
+                if is_banned:
                     self.metrics["rate_limits_hit"] += 1
-                    logger.warning("Rate limit / IP block detected on %s (HTTP %s)", url, resp.status_code)
+                    logger.warning("Блокировка QRATOR (HTTP %s / 'Доступ ограничен') на %s", resp.status_code, url)
                     self.rate_limiter.register_rate_limit()
                     if current_proxy and self.proxy_manager:
                         self.proxy_manager.mark_failure(current_proxy)
-                    continue
+                        continue
+                    else:
+                        logger.error(
+                            "Прямой запрос заблокирован QRATOR (HTTP %s). "
+                            "Повторные попытки отменены во избежание пермабана. "
+                            "Смените IP (включите/выключите авиарежим на телефоне) или используйте резидентские прокси.",
+                            resp.status_code
+                        )
+                        return None
 
                 if resp.status_code == 200:
                     self.metrics["successful_requests"] += 1
@@ -262,6 +275,7 @@ class AvitoParser:
         price_max: Optional[int] = None,
         sort: Optional[str] = None,
         category: Optional[str] = None,
+        use_mobile: bool = True,
     ) -> SearchResult:
         """
         Search for items across Avito with optional price and sorting filters.
@@ -273,6 +287,7 @@ class AvitoParser:
         :param price_max: Maximum price filter (RUB)
         :param sort: Sort order: 'date' / 'new' (101), 'price_asc' (1), 'price_desc' (2)
         :param category: Optional category slug (e.g. 'noutbuki', 'telefony')
+        :param use_mobile: Fetch via mobile endpoint (m.avito.ru) to avoid QRATOR WAF restrictions
         """
         params = []
         if query:
@@ -294,14 +309,22 @@ class AvitoParser:
         if category:
             path_parts.append(category.strip("/"))
 
-        search_url = f"https://www.avito.ru/{'/'.join(path_parts)}{query_string}"
-        return self.search_by_url(search_url, page=page)
+        base_host = "https://m.avito.ru" if use_mobile else "https://www.avito.ru"
+        search_url = f"{base_host}/{'/'.join(path_parts)}{query_string}"
+        return self.search_by_url(search_url, page=page, use_mobile=use_mobile)
 
-    def search_by_url(self, search_url: str, page: int = 1) -> SearchResult:
+    def search_by_url(self, search_url: str, page: int = 1, use_mobile: bool = True) -> SearchResult:
         """
         Parse a search or catalog page by a direct Avito URL (with custom filters).
         """
-        html = self.fetch_html(search_url)
+        fetch_url = search_url
+        if use_mobile:
+            if fetch_url.startswith("https://www.avito.ru"):
+                fetch_url = "https://m.avito.ru" + fetch_url[len("https://www.avito.ru"):]
+            elif fetch_url.startswith("http://www.avito.ru"):
+                fetch_url = "https://m.avito.ru" + fetch_url[len("http://www.avito.ru"):]
+
+        html = self.fetch_html(fetch_url)
         if not html:
             return SearchResult(url=search_url, page=page, items=[])
 
@@ -314,13 +337,15 @@ class AvitoParser:
         query: str = "",
         location: str = "all",
         max_pages: int = 3,
+        use_mobile: bool = True,
         **kwargs
     ) -> Generator[SearchResultItem, None, None]:
         """
         Generator that automatically paginates through search results up to max_pages.
+        Includes a 45-60 second pause between pages to prevent QRATOR IP rate limit blocks.
         """
         for p in range(1, max_pages + 1):
-            res = self.search(query=query, location=location, page=p, **kwargs)
+            res = self.search(query=query, location=location, page=p, use_mobile=use_mobile, **kwargs)
             if not res.items:
                 break
             for item in res.items:
@@ -328,6 +353,14 @@ class AvitoParser:
             # Stop if reached last page
             if res.total_count and len(res.items) * p >= res.total_count:
                 break
+            # Pause between pages to protect mobile IP against QRATOR block
+            if p < max_pages:
+                delay = 45.0 + random.uniform(0.0, 15.0)
+                logger.info(
+                    "Iter search: waiting %.1f sec before requesting page %d to prevent QRATOR rate limit...",
+                    delay, p + 1
+                )
+                time.sleep(delay)
 
     def get_metrics(self) -> Dict[str, Union[int, float]]:
         """Return runtime request and timing metrics."""

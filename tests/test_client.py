@@ -58,9 +58,13 @@ def test_search_url_building():
     with patch.object(parser, "search_by_url") as mock_search_by_url:
         mock_search_by_url.return_value = MagicMock()
 
-        # Simple query
+        # Simple query (default use_mobile=True builds on m.avito.ru)
         parser.search(query="ThinkBook", location="moskva")
-        mock_search_by_url.assert_called_with("https://www.avito.ru/moskva?q=ThinkBook", page=1)
+        mock_search_by_url.assert_called_with("https://m.avito.ru/moskva?q=ThinkBook", page=1, use_mobile=True)
+
+        # Desktop override
+        parser.search(query="ThinkBook", location="moskva", use_mobile=False)
+        mock_search_by_url.assert_called_with("https://www.avito.ru/moskva?q=ThinkBook", page=1, use_mobile=False)
 
         # Query with filters
         parser.search(
@@ -73,10 +77,26 @@ def test_search_url_building():
             page=2,
         )
         called_url = mock_search_by_url.call_args[0][0]
+        assert called_url.startswith("https://m.avito.ru")
         assert "nizhniy_novgorod/noutbuki" in called_url
         assert "q=RTX+4060" in called_url
         assert "p=2" in called_url
         assert "pmin=50000" in called_url
         assert "pmax=90000" in called_url
         assert "s=1" in called_url
+
+
+def test_ban_aborts_immediately_on_single_ip():
+    parser = AvitoParser(max_retries=3)
+    mock_resp = MagicMock()
+    mock_resp.status_code = 403
+    mock_resp.text = "<html><body>Доступ ограничен: проблема с IP</body></html>"
+
+    with patch.object(parser.session, "get", return_value=mock_resp) as mock_get:
+        result = parser.fetch_html("https://m.avito.ru/nizhniy_novgorod/noutbuki")
+        assert result is None
+        # Must only attempt 1 request to avoid permaban from QRATOR!
+        assert mock_get.call_count == 1
+        assert parser.metrics["rate_limits_hit"] == 1
+
 
