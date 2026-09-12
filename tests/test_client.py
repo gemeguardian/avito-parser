@@ -50,3 +50,33 @@ def test_parser_metrics():
     assert metrics["pow_challenges_solved"] == 0
     assert metrics["total_waited_seconds"] == 0.0
     assert metrics["average_delay_seconds"] == 0.0
+
+
+def test_search_url_building():
+    parser = AvitoParser()
+
+    with patch.object(parser, "search_by_url") as mock_search_by_url:
+        mock_search_by_url.return_value = MagicMock()
+
+        # Simple query
+        parser.search(query="ThinkBook", location="moskva")
+        mock_search_by_url.assert_called_with("https://www.avito.ru/moskva?q=ThinkBook", page=1)
+
+        # Query with filters
+        parser.search(
+            query="RTX 4060",
+            location="nizhniy_novgorod",
+            category="noutbuki",
+            price_min=50000,
+            price_max=90000,
+            sort="price_asc",
+            page=2,
+        )
+        called_url = mock_search_by_url.call_args[0][0]
+        assert "nizhniy_novgorod/noutbuki" in called_url
+        assert "q=RTX+4060" in called_url
+        assert "p=2" in called_url
+        assert "pmin=50000" in called_url
+        assert "pmax=90000" in called_url
+        assert "s=1" in called_url
+

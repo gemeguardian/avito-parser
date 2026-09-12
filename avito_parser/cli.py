@@ -101,17 +101,64 @@ def cmd_search(args):
     setup_logging(args.verbose)
     parser = AvitoParser(
         proxies=args.proxy,
+        profile=args.profile,
         min_delay=args.min_delay,
         max_delay=args.max_delay,
     )
 
-    print(f"[*] Searching for '{args.query}' (location={args.location}, page={args.page})...")
-    res = parser.search(args.query, location=args.location, page=args.page)
-    print(f"\n[+] Total items found: {res.total_count or len(res.items)}")
-    print("-" * 75)
-    for i, it in enumerate(res.items, 1):
-        print(f"{i:<3} | {it.title[:38]:<40} | {it.formatted_price:<12} | {it.url}")
-    print("-" * 75)
+    items = []
+    if args.url:
+        print(f"[*] Searching directly by URL: {args.url}...")
+        res = parser.search_by_url(args.url, page=args.page)
+        items = res.items
+        total = res.total_count or len(items)
+    elif args.max_pages and args.max_pages > 1:
+        print(f"[*] Searching for '{args.query}' across up to {args.max_pages} pages...")
+        for item in parser.iter_search(
+            query=args.query,
+            location=args.location,
+            max_pages=args.max_pages,
+            price_min=args.price_min,
+            price_max=args.price_max,
+            sort=args.sort,
+            category=args.category,
+        ):
+            items.append(item)
+            print(f"  • {item.title[:38]:<40} | {item.formatted_price:<12}")
+        total = len(items)
+    else:
+        print(f"[*] Searching for '{args.query}' (location={args.location}, page={args.page})...")
+        res = parser.search(
+            query=args.query,
+            location=args.location,
+            page=args.page,
+            price_min=args.price_min,
+            price_max=args.price_max,
+            sort=args.sort,
+            category=args.category,
+        )
+        items = res.items
+        total = res.total_count or len(items)
+
+    print(f"\n[+] Total items retrieved: {len(items)} (catalog total: {total})")
+    print("-" * 80)
+    for i, it in enumerate(items, 1):
+        print(f"{i:<3} | {it.title[:38]:<40} | {it.formatted_price:<14} | {it.url}")
+    print("-" * 80)
+
+    if args.json:
+        import json
+        with open(args.json, "w", encoding="utf-8") as f:
+            json.dump([it.to_dict() for it in items], f, ensure_ascii=False, indent=2)
+        print(f"[+] Saved search results to {args.json}")
+    if args.csv:
+        import csv
+        with open(args.csv, "w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["id", "title", "price", "formatted_price", "location", "time", "url"])
+            for it in items:
+                w.writerow([it.id, it.title, it.price, it.formatted_price, it.location, it.time, it.url])
+        print(f"[+] Saved search results to {args.csv}")
 
 
 def cmd_test_pow(args):
@@ -161,9 +208,17 @@ def main():
 
     # Search subcommand
     p_search = subparsers.add_parser("search", help="Search catalog listings")
-    p_search.add_argument("query", help="Search query string")
-    p_search.add_argument("--location", default="all", help="Location slug (e.g. nizhniy_novgorod, msk, all)")
+    p_search.add_argument("query", nargs="?", default="", help="Search query string (optional if --url is provided)")
+    p_search.add_argument("--url", help="Direct search/catalog URL with custom filters")
+    p_search.add_argument("--location", default="all", help="Location slug (e.g. nizhniy_novgorod, moskva, all)")
+    p_search.add_argument("--category", help="Category slug (e.g. noutbuki, telefony)")
+    p_search.add_argument("--price-min", type=int, help="Minimum price in RUB")
+    p_search.add_argument("--price-max", type=int, help="Maximum price in RUB")
+    p_search.add_argument("--sort", choices=["date", "new", "price_asc", "price_desc"], help="Sort order")
     p_search.add_argument("--page", type=int, default=1, help="Page number")
+    p_search.add_argument("--max-pages", type=int, default=1, help="Max pages to crawl sequentially")
+    p_search.add_argument("--json", help="Export search results to JSON")
+    p_search.add_argument("--csv", help="Export search results to CSV")
     p_search.add_argument("--proxy", help="Proxy URL")
     p_search.add_argument("--profile", choices=["stealth", "balanced", "fast_rotating", "datacenter"], default=None, help="Rate limit profile")
     p_search.add_argument("--min-delay", type=float, default=None)

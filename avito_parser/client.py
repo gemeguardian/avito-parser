@@ -9,7 +9,7 @@ from typing import Callable, Dict, Generator, Iterable, List, Optional, Union
 import requests
 from urllib.parse import quote_plus
 
-from .models import AvitoItem, SearchResult
+from .models import AvitoItem, SearchResult, SearchResultItem
 from .parser import AvitoCatalogParser, AvitoItemParser
 from .pow import AvitoPoWSolver
 from .proxy import ProxyConfig, ProxyManager
@@ -234,21 +234,81 @@ class AvitoParser:
 
         return results
 
-    def search(self, query: str, location: str = "all", page: int = 1) -> SearchResult:
+    def search(
+        self,
+        query: str = "",
+        location: str = "all",
+        page: int = 1,
+        price_min: Optional[int] = None,
+        price_max: Optional[int] = None,
+        sort: Optional[str] = None,
+        category: Optional[str] = None,
+    ) -> SearchResult:
         """
-        Search for items across Avito.
-        """
-        encoded_q = quote_plus(query)
-        if location == "all":
-            search_url = f"https://www.avito.ru/all?q={encoded_q}&p={page}"
-        else:
-            search_url = f"https://www.avito.ru/{location}?q={encoded_q}&p={page}"
+        Search for items across Avito with optional price and sorting filters.
 
+        :param query: Keyword query text (e.g. 'ThinkBook')
+        :param location: City or region slug ('all', 'nizhniy_novgorod', 'moskva', etc.)
+        :param page: Page number (1-based)
+        :param price_min: Minimum price filter (RUB)
+        :param price_max: Maximum price filter (RUB)
+        :param sort: Sort order: 'date' / 'new' (101), 'price_asc' (1), 'price_desc' (2)
+        :param category: Optional category slug (e.g. 'noutbuki', 'telefony')
+        """
+        params = []
+        if query:
+            params.append(f"q={quote_plus(query)}")
+        if page > 1:
+            params.append(f"p={page}")
+        if price_min is not None:
+            params.append(f"pmin={price_min}")
+        if price_max is not None:
+            params.append(f"pmax={price_max}")
+        if sort:
+            sort_map = {"date": "101", "new": "101", "price_asc": "1", "price_desc": "2"}
+            sort_code = sort_map.get(sort.lower(), sort)
+            params.append(f"s={sort_code}")
+
+        query_string = ("?" + "&".join(params)) if params else ""
+
+        path_parts = [location.strip("/")]
+        if category:
+            path_parts.append(category.strip("/"))
+
+        search_url = f"https://www.avito.ru/{'/'.join(path_parts)}{query_string}"
+        return self.search_by_url(search_url, page=page)
+
+    def search_by_url(self, search_url: str, page: int = 1) -> SearchResult:
+        """
+        Parse a search or catalog page by a direct Avito URL (with custom filters).
+        """
         html = self.fetch_html(search_url)
         if not html:
             return SearchResult(url=search_url, page=page, items=[])
 
-        return AvitoCatalogParser.parse(html, url=search_url)
+        res = AvitoCatalogParser.parse(html, url=search_url)
+        res.page = page
+        return res
+
+    def iter_search(
+        self,
+        query: str = "",
+        location: str = "all",
+        max_pages: int = 3,
+        **kwargs
+    ) -> Generator[SearchResultItem, None, None]:
+        """
+        Generator that automatically paginates through search results up to max_pages.
+        """
+        for p in range(1, max_pages + 1):
+            res = self.search(query=query, location=location, page=p, **kwargs)
+            if not res.items:
+                break
+            for item in res.items:
+                yield item
+            # Stop if reached last page
+            if res.total_count and len(res.items) * p >= res.total_count:
+                break
 
     def get_metrics(self) -> Dict[str, Union[int, float]]:
         """Return runtime request and timing metrics."""
