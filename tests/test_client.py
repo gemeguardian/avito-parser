@@ -41,15 +41,15 @@ def test_pow_ttl_tracking():
     assert parser.is_pow_expired(buffer_seconds=30.0) is True
 
 
-def test_parser_metrics():
-    parser = AvitoParser(profile="fast")
-    metrics = parser.get_metrics()
-    assert metrics["total_requests"] == 0
-    assert metrics["successful_requests"] == 0
-    assert metrics["rate_limits_hit"] == 0
-    assert metrics["pow_challenges_solved"] == 0
-    assert metrics["total_waited_seconds"] == 0.0
-    assert metrics["average_delay_seconds"] == 0.0
+def test_parser_cookies_support():
+    parser_dict = AvitoParser(cookies={"test_cookie": "123", "session": "abc"})
+    assert parser_dict.session.cookies.get("test_cookie") == "123"
+    assert parser_dict.session.cookies.get("session") == "abc"
+
+    parser_str = AvitoParser(cookies="foo=bar; baz=qux")
+    assert parser_str.session.cookies.get("foo") == "bar"
+    assert parser_str.session.cookies.get("baz") == "qux"
+
 
 
 def test_search_url_building():

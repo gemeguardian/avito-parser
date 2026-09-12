@@ -41,6 +41,7 @@ class AvitoParser:
         timeout: float = 20.0,
         max_retries: int = 3,
         user_agent: Optional[str] = None,
+        cookies: Optional[Union[str, Dict[str, str]]] = None,
     ):
         self.timeout = timeout
         self.max_retries = max_retries
@@ -79,14 +80,32 @@ class AvitoParser:
         self.session = requests.Session()
         self._setup_session()
 
+        if cookies:
+            self._apply_cookies(cookies)
+
+    def _apply_cookies(self, cookies: Union[str, Dict[str, str]]):
+        """Load session cookies from string or dict."""
+        if isinstance(cookies, dict):
+            self.session.cookies.update(cookies)
+        elif isinstance(cookies, str):
+            for part in cookies.split(";"):
+                if "=" in part:
+                    k, v = part.strip().split("=", 1)
+                    self.session.cookies.set(k.strip(), v.strip(), domain=".avito.ru")
+
     def _setup_session(self):
+        # Resolve platform from User-Agent to avoid WAF header mismatch
+        is_mobile = "Mobile" in self.user_agent or "Android" in self.user_agent
+        platform = '"Android"' if is_mobile else ('"macOS"' if "Macintosh" in self.user_agent else '"Windows"')
+        sec_mobile = "?1" if is_mobile else "?0"
+
         self.session.headers.update({
             "User-Agent": self.user_agent,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
             "Sec-Ch-Ua": '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Ch-Ua-Mobile": sec_mobile,
+            "Sec-Ch-Ua-Platform": platform,
             "Sec-Fetch-Dest": "document",
             "Sec-Fetch-Mode": "navigate",
             "Sec-Fetch-Site": "none",

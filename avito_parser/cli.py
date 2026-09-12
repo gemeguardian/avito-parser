@@ -21,6 +21,15 @@ def setup_logging(verbose: bool):
     )
 
 
+def load_cookies(args):
+    if getattr(args, "cookies", None):
+        return args.cookies
+    if getattr(args, "cookies_file", None):
+        with open(args.cookies_file, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    return None
+
+
 def cmd_item(args):
     setup_logging(args.verbose)
     parser = AvitoParser(
@@ -28,6 +37,7 @@ def cmd_item(args):
         profile=args.profile,
         min_delay=args.min_delay,
         max_delay=args.max_delay,
+        cookies=load_cookies(args),
     )
 
     items: List[AvitoItem] = []
@@ -72,6 +82,7 @@ def cmd_batch(args):
         profile=args.profile,
         min_delay=args.min_delay,
         max_delay=args.max_delay,
+        cookies=load_cookies(args),
     )
 
     print(f"[*] Processing batch of {len(urls)} URLs with profile '{args.profile or 'balanced'}'...")
@@ -104,6 +115,7 @@ def cmd_search(args):
         profile=args.profile,
         min_delay=args.min_delay,
         max_delay=args.max_delay,
+        cookies=load_cookies(args),
     )
 
     items = []
@@ -184,6 +196,8 @@ def main():
     p_item.add_argument("urls", nargs="+", help="Avito item URL(s)")
     p_item.add_argument("--proxy", help="Proxy URL (socks5h://... or http://...)")
     p_item.add_argument("--profile", choices=["stealth", "balanced", "fast_rotating", "datacenter"], default=None, help="Rate limit profile")
+    p_item.add_argument("--cookies", help="Raw Cookie header string (e.g. 'u=...; v=...')")
+    p_item.add_argument("--cookies-file", help="Path to text file containing Cookie string")
     p_item.add_argument("--json", help="Export to JSON file")
     p_item.add_argument("--csv", help="Export to CSV file")
     p_item.add_argument("--sqlite", help="Export to SQLite database")
@@ -198,6 +212,8 @@ def main():
     p_batch.add_argument("--proxy-file", help="Path to text file with proxy list")
     p_batch.add_argument("--proxy", help="Single proxy URL")
     p_batch.add_argument("--profile", choices=["stealth", "balanced", "fast_rotating", "datacenter"], default=None, help="Rate limit profile")
+    p_batch.add_argument("--cookies", help="Raw Cookie header string")
+    p_batch.add_argument("--cookies-file", help="Path to text file containing Cookie string")
     p_batch.add_argument("--json", help="Export to JSON file")
     p_batch.add_argument("--csv", help="Export to CSV file")
     p_batch.add_argument("--sqlite", help="Export to SQLite database")
@@ -217,6 +233,8 @@ def main():
     p_search.add_argument("--sort", choices=["date", "new", "price_asc", "price_desc"], help="Sort order")
     p_search.add_argument("--page", type=int, default=1, help="Page number")
     p_search.add_argument("--max-pages", type=int, default=1, help="Max pages to crawl sequentially")
+    p_search.add_argument("--cookies", help="Raw Cookie header string")
+    p_search.add_argument("--cookies-file", help="Path to text file containing Cookie string")
     p_search.add_argument("--json", help="Export search results to JSON")
     p_search.add_argument("--csv", help="Export search results to CSV")
     p_search.add_argument("--proxy", help="Proxy URL")
