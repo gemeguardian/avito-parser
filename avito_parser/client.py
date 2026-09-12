@@ -4,7 +4,8 @@ Orchestrates requests, PoW bypass, rate limiting, and proxy rotation.
 """
 import logging
 import random
-from typing import Callable, Generator, Iterable, List, Optional, Union
+import time
+from typing import Callable, Dict, Generator, Iterable, List, Optional, Union
 import requests
 from urllib.parse import quote_plus
 
@@ -12,7 +13,7 @@ from .models import AvitoItem, SearchResult
 from .parser import AvitoCatalogParser, AvitoItemParser
 from .pow import AvitoPoWSolver
 from .proxy import ProxyConfig, ProxyManager
-from .rate_limiter import RateLimiter
+from .rate_limiter import RateLimiter, RateLimitProfile, get_profile_config
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,9 @@ DEFAULT_USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
 ]
+
+# Avito's firewall PoW token unblock lifetime (in seconds)
+AVITO_UNBLOCK_TTL_SECONDS = 420.0
 
 
 class AvitoParser:
@@ -31,8 +35,9 @@ class AvitoParser:
     def __init__(
         self,
         proxies: Optional[Union[str, List[str], ProxyManager]] = None,
-        min_delay: float = 2.0,
-        max_delay: float = 4.0,
+        profile: Optional[Union[str, RateLimitProfile]] = None,
+        min_delay: Optional[float] = None,
+        max_delay: Optional[float] = None,
         timeout: float = 20.0,
         max_retries: int = 3,
         user_agent: Optional[str] = None,
@@ -47,8 +52,29 @@ class AvitoParser:
         else:
             self.proxy_manager = None
 
-        self.rate_limiter = RateLimiter(min_delay=min_delay, max_delay=max_delay)
+        # Resolve rate limiter profile
+        chosen_profile = profile or RateLimitProfile.BALANCED
+        self.rate_limiter = RateLimiter.from_profile(chosen_profile)
+
+        # Allow explicit delay overrides
+        if min_delay is not None:
+            self.rate_limiter.min_delay = min_delay
+        if max_delay is not None:
+            self.rate_limiter.max_delay = max(self.rate_limiter.min_delay, max_delay)
+
         self.user_agent = user_agent or random.choice(DEFAULT_USER_AGENTS)
+
+        # PoW Token TTL Tracking
+        self.pow_solved_at: Optional[float] = None
+        self.pow_unblock_ttl: float = AVITO_UNBLOCK_TTL_SECONDS
+
+        # Request Metrics
+        self.metrics: Dict[str, Union[int, float]] = {
+            "total_requests": 0,
+            "successful_requests": 0,
+            "rate_limits_hit": 0,
+            "pow_challenges_solved": 0,
+        }
 
         self.session = requests.Session()
         self._setup_session()
@@ -76,6 +102,26 @@ class AvitoParser:
             self.session.proxies.update(proxy_cfg.to_requests())
         return proxy_cfg
 
+    def is_pow_expired(self, buffer_seconds: float = 30.0) -> bool:
+        """
+        Check if the PoW session token has expired or is about to expire within buffer_seconds.
+        """
+        if self.pow_solved_at is None:
+            return False
+        elapsed = time.time() - self.pow_solved_at
+        return elapsed >= (self.pow_unblock_ttl - buffer_seconds)
+
+    def check_pow_ttl(self) -> bool:
+        """
+        Proactively check and refresh session if PoW token is approaching 420s expiration.
+        """
+        if self.is_pow_expired():
+            logger.info("PoW unblock token is expiring (TTL=%ss). Re-verifying...", self.pow_unblock_ttl)
+            self.session.cookies.pop("pow_solved", None)
+            self.session.cookies.pop("pow_challenge", None)
+            return self.warmup()
+        return True
+
     def warmup(self, base_url: str = "https://www.avito.ru") -> bool:
         """
         Send an initial request to warm up session cookies and resolve any initial challenge.
@@ -83,11 +129,20 @@ class AvitoParser:
         logger.info("Warming up session against %s...", base_url)
         try:
             self._apply_proxy()
+            self.metrics["total_requests"] += 1
             resp = self.session.get(base_url, timeout=self.timeout)
             if AvitoPoWSolver.is_challenge_response(resp.status_code, resp.text):
                 logger.info("PoW challenge triggered during warmup. Solving...")
-                return AvitoPoWSolver.solve(self.session, resp.text, base_url=base_url)
-            return resp.status_code == 200
+                solved = AvitoPoWSolver.solve(self.session, resp.text, base_url=base_url)
+                if solved:
+                    self.pow_solved_at = time.time()
+                    self.metrics["pow_challenges_solved"] += 1
+                return solved
+
+            if resp.status_code == 200:
+                self.metrics["successful_requests"] += 1
+                return True
+            return False
         except Exception as e:
             logger.warning("Warmup encountered an error: %s", e)
             return False
@@ -99,10 +154,15 @@ class AvitoParser:
         attempt = 0
         while attempt < self.max_retries:
             attempt += 1
+
+            # Proactive TTL maintenance
+            self.check_pow_ttl()
+
             self.rate_limiter.wait()
             current_proxy = self._apply_proxy()
 
             try:
+                self.metrics["total_requests"] += 1
                 logger.debug("GET %s (attempt %s/%s, proxy=%s)", url, attempt, self.max_retries, current_proxy)
                 resp = self.session.get(url, timeout=self.timeout)
 
@@ -111,6 +171,8 @@ class AvitoParser:
                     logger.info("Encountered firewall PoW challenge on %s. Resolving...", url)
                     solved = AvitoPoWSolver.solve(self.session, resp.text, timeout=self.timeout)
                     if solved:
+                        self.pow_solved_at = time.time()
+                        self.metrics["pow_challenges_solved"] += 1
                         # Retry immediately with solved cookie
                         resp = self.session.get(url, timeout=self.timeout)
                     else:
@@ -118,6 +180,7 @@ class AvitoParser:
 
                 # Check for rate limit / IP block
                 if resp.status_code == 429 or "Доступ ограничен: проблема с IP" in resp.text:
+                    self.metrics["rate_limits_hit"] += 1
                     logger.warning("Rate limit / IP block detected on %s (HTTP %s)", url, resp.status_code)
                     self.rate_limiter.register_rate_limit()
                     if current_proxy and self.proxy_manager:
@@ -125,6 +188,7 @@ class AvitoParser:
                     continue
 
                 if resp.status_code == 200:
+                    self.metrics["successful_requests"] += 1
                     self.rate_limiter.register_success()
                     if current_proxy and self.proxy_manager:
                         self.proxy_manager.mark_success(current_proxy)
@@ -185,6 +249,14 @@ class AvitoParser:
             return SearchResult(url=search_url, page=page, items=[])
 
         return AvitoCatalogParser.parse(html, url=search_url)
+
+    def get_metrics(self) -> Dict[str, Union[int, float]]:
+        """Return runtime request and timing metrics."""
+        return {
+            **self.metrics,
+            "total_waited_seconds": round(self.rate_limiter.total_waited, 2),
+            "average_delay_seconds": round(self.rate_limiter.average_delay, 2),
+        }
 
     def close(self):
         """Close HTTP session."""

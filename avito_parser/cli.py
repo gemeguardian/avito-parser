@@ -25,12 +25,13 @@ def cmd_item(args):
     setup_logging(args.verbose)
     parser = AvitoParser(
         proxies=args.proxy,
+        profile=args.profile,
         min_delay=args.min_delay,
         max_delay=args.max_delay,
     )
 
     items: List[AvitoItem] = []
-    print(f"[*] Fetching {len(args.urls)} item(s)...")
+    print(f"[*] Fetching {len(args.urls)} item(s) using profile '{args.profile or 'balanced'}'...")
 
     def progress(item: AvitoItem, current: int, total: int):
         print(f"[{current}/{total}] Found: {item.title} — {item.formatted_price}")
@@ -38,6 +39,10 @@ def cmd_item(args):
     items = parser.get_items(args.urls, callback=progress)
 
     ItemExporter.print_summary(items)
+    metrics = parser.get_metrics()
+    print(f"[i] Metrics: {metrics['successful_requests']}/{metrics['total_requests']} successful, "
+          f"PoW solved: {metrics['pow_challenges_solved']}, rate limits: {metrics['rate_limits_hit']}, "
+          f"avg delay: {metrics['average_delay_seconds']}s")
 
     if args.json:
         ItemExporter.to_json(items, args.json)
@@ -64,17 +69,22 @@ def cmd_batch(args):
 
     parser = AvitoParser(
         proxies=proxies,
+        profile=args.profile,
         min_delay=args.min_delay,
         max_delay=args.max_delay,
     )
 
-    print(f"[*] Processing batch of {len(urls)} URLs...")
+    print(f"[*] Processing batch of {len(urls)} URLs with profile '{args.profile or 'balanced'}'...")
 
     def progress(item: AvitoItem, current: int, total: int):
         print(f"[{current}/{total}] {item.title} -> {item.formatted_price}")
 
     items = parser.get_items(urls, callback=progress)
     ItemExporter.print_summary(items)
+    metrics = parser.get_metrics()
+    print(f"[i] Metrics: {metrics['successful_requests']}/{metrics['total_requests']} successful, "
+          f"PoW solved: {metrics['pow_challenges_solved']}, rate limits: {metrics['rate_limits_hit']}, "
+          f"avg delay: {metrics['average_delay_seconds']}s")
 
     if args.json:
         ItemExporter.to_json(items, args.json)
@@ -126,11 +136,12 @@ def main():
     p_item = subparsers.add_parser("item", help="Parse one or more item URLs")
     p_item.add_argument("urls", nargs="+", help="Avito item URL(s)")
     p_item.add_argument("--proxy", help="Proxy URL (socks5h://... or http://...)")
+    p_item.add_argument("--profile", choices=["stealth", "balanced", "fast_rotating", "datacenter"], default=None, help="Rate limit profile")
     p_item.add_argument("--json", help="Export to JSON file")
     p_item.add_argument("--csv", help="Export to CSV file")
     p_item.add_argument("--sqlite", help="Export to SQLite database")
-    p_item.add_argument("--min-delay", type=float, default=2.0, help="Min delay between requests (sec)")
-    p_item.add_argument("--max-delay", type=float, default=4.0, help="Max delay between requests (sec)")
+    p_item.add_argument("--min-delay", type=float, default=None, help="Override min delay (sec)")
+    p_item.add_argument("--max-delay", type=float, default=None, help="Override max delay (sec)")
     p_item.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
     p_item.set_defaults(func=cmd_item)
 
@@ -139,11 +150,12 @@ def main():
     p_batch.add_argument("file", help="Path to text file containing item URLs")
     p_batch.add_argument("--proxy-file", help="Path to text file with proxy list")
     p_batch.add_argument("--proxy", help="Single proxy URL")
+    p_batch.add_argument("--profile", choices=["stealth", "balanced", "fast_rotating", "datacenter"], default=None, help="Rate limit profile")
     p_batch.add_argument("--json", help="Export to JSON file")
     p_batch.add_argument("--csv", help="Export to CSV file")
     p_batch.add_argument("--sqlite", help="Export to SQLite database")
-    p_batch.add_argument("--min-delay", type=float, default=2.5, help="Min delay between requests")
-    p_batch.add_argument("--max-delay", type=float, default=5.0, help="Max delay between requests")
+    p_batch.add_argument("--min-delay", type=float, default=None, help="Override min delay")
+    p_batch.add_argument("--max-delay", type=float, default=None, help="Override max delay")
     p_batch.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
     p_batch.set_defaults(func=cmd_batch)
 
@@ -153,8 +165,9 @@ def main():
     p_search.add_argument("--location", default="all", help="Location slug (e.g. nizhniy_novgorod, msk, all)")
     p_search.add_argument("--page", type=int, default=1, help="Page number")
     p_search.add_argument("--proxy", help="Proxy URL")
-    p_search.add_argument("--min-delay", type=float, default=2.0)
-    p_search.add_argument("--max-delay", type=float, default=4.0)
+    p_search.add_argument("--profile", choices=["stealth", "balanced", "fast_rotating", "datacenter"], default=None, help="Rate limit profile")
+    p_search.add_argument("--min-delay", type=float, default=None)
+    p_search.add_argument("--max-delay", type=float, default=None)
     p_search.add_argument("-v", "--verbose", action="store_true")
     p_search.set_defaults(func=cmd_search)
 

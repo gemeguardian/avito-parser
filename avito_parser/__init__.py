@@ -6,10 +6,10 @@ from .models import AvitoItem, ItemParam, SearchResult, SearchResultItem, Seller
 from .parser import AvitoCatalogParser, AvitoItemParser
 from .pow import AvitoPoWSolver
 from .proxy import ProxyConfig, ProxyManager
-from .rate_limiter import RateLimiter
+from .rate_limiter import RateLimiter, RateLimitProfile, get_profile_config
 from .exporter import ItemExporter
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __all__ = [
     "AvitoParser",
     "AvitoItem",
@@ -23,5 +23,7 @@ __all__ = [
     "ProxyConfig",
     "ProxyManager",
     "RateLimiter",
+    "RateLimitProfile",
+    "get_profile_config",
     "ItemExporter",
 ]
